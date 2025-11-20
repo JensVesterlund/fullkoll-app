@@ -1,0 +1,14 @@
+# Supabase config with edge function schedules
+
+[functions]
+verify_jwt = false
+
+[functions.scheduleReminders]
+verify_jwt = false
+# Run daily at 05:00
+schedule = "0 5 * * *"
+
+[functions.processAutogiroCharge]
+verify_jwt = false
+# Run hourly to process due subscription charges
+schedule = "0 * * * *"
