@@ -8,53 +8,46 @@ jobs:
     runs-on: macos-latest
 
     steps:
-      - name: Checkout code
+      - name: Check out repository
         uses: actions/checkout@v3
 
-      - name: Install Flutter
+      - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.24.0'
+          channel: stable
 
-      - name: Flutter pub get
+      - name: Install dependencies
         run: flutter pub get
 
-      - name: Install CocoaPods dependencies
-        run: |
-          cd ios
-          pod install
-          cd ..
+      - name: Build iOS IPA
+        run: flutter build ipa --release
 
-      - name: Decode and install certificate
+      - name: Set up App Store Connect API key
         run: |
-          echo "$IOS_CERT_P12_BASE64" | base64 --decode > certificate.p12
+          echo "${{ secrets.APPSTORE_API_KEY }}" > authkey.p8
+
+      - name: Import Certificates
+        env:
+          P12_PASSWORD: ${{ secrets.IOS_CERT_P12_PASSWORD }}
+        run: |
+          echo "${{ secrets.IOS_CERT_P12_BASE64 }}" | base64 --decode > certificate.p12
           security create-keychain -p "" build.keychain
-          security import certificate.p12 -k build.keychain -P "$IOS_CERT_P12_PASSWORD" -T /usr/bin/codesign
+          security import certificate.p12 -k build.keychain -P "$P12_PASSWORD" -A
           security list-keychains -s build.keychain
           security default-keychain -s build.keychain
           security unlock-keychain -p "" build.keychain
+          security set-keychain-settings -t 3600 -l ~/Library/Keychains/build.keychain
 
-        env:
-          IOS_CERT_P12_BASE64: ${{ secrets.IOS_CERT_P12_BASE64 }}
-          IOS_CERT_P12_PASSWORD: ${{ secrets.IOS_CERT_P12_PASSWORD }}
-
-      - name: Install provisioning profile
+      - name: Install Provisioning Profile
         run: |
-          echo "$IOS_PROVISIONING_PROFILE_BASE64" | base64 --decode > fullkoll.mobileprovision
           mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
-          cp fullkoll.mobileprovision ~/Library/MobileDevice/Provisioning\ Profiles/
+          echo "${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}" | base64 --decode > ~/Library/MobileDevice/Provisioning\ Profiles/profile.mobileprovision
 
-        env:
-          IOS_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}
-
-      - name: Archive app
+      - name: Upload to App Store Connect
         run: |
-          flutter build ipa --release
-
-      - name: Upload to TestFlight
-        uses: apple-actions/upload-testflight@v2
-        with:
-          app-path: build/ios/ipa/*.ipa
-          issuer-id: ${{ secrets.APPSTORE_ISSUER_ID }}
-          api-key-id: ${{ secrets.APPSTORE_API_KEY_ID }}
-          api-private-key: ${{ secrets.APPSTORE_API_KEY_BASE64 }}
+          xcrun altool \
+            --upload-app \
+            --type ipa \
+            --file build/ios/ipa/*.ipa \
+            --apiKey ${{ secrets.APPSTORE_API_KEY_ID }} \
+            --apiIssuer ${{ secrets.APPSTORE_API_KEY_ISSUER }}
