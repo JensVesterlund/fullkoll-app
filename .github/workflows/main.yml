@@ -1,0 +1,15 @@
+Release (Fastlane)
+on:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+    - uses: actions/checkout@v3
+    - uses: subosito/flutter-action@v2
+    - run: flutter pub get
+    - run: gem install bundler && bundle install --jobs 4
+    - run: |
+        echo "$IOS_CERT_P12_BASE64" | base64 --decode > ios_cert.p12
+        echo "$IOS_PROVISIONING_PROFILE_BASE64" | base64 --decode > profile.mobileprovision
+        bundle exec fastlane ios release
