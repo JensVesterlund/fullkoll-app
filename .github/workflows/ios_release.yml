@@ -35,25 +35,51 @@ jobs:
       - name: Flutter version
         run: flutter --version
 
-      # Optional: regenerate ios/ on the runner
+      - name: Show repo structure (debug)
+        run: |
+          pwd
+          ls -la
+          echo "--- tool/ ---"
+          ls -la tool || true
+          echo "--- ios/ ---"
+          ls -la ios || true
+
+      - name: Install Dart/Flutter deps
+        run: flutter pub get
+
+      # Ensure Ruby gems exist (CocoaPods + xcodeproj) on the runner
+      - name: Ensure CocoaPods + xcodeproj gems
+        run: |
+          ruby -v
+          gem -v
+          if ! gem list -i cocoapods >/dev/null; then
+            sudo gem install cocoapods -N
+          fi
+          if ! gem list -i xcodeproj >/dev/null; then
+            sudo gem install xcodeproj -N
+          fi
+          pod --version
+
+      # Optional: regenerate ios/ on the runner (FAILS clearly if script missing)
       - name: Regenerate iOS project (optional)
         if: ${{ inputs.regen_ios }}
         run: |
-          bash tool/ios_regen.sh
+          set -euxo pipefail
+          test -f ./tool/ios_regen.sh || (echo "ERROR: ./tool/ios_regen.sh saknas i repot. Den måste committas på exakt den sökvägen." 1>&2; exit 1)
+          bash ./tool/ios_regen.sh
 
-      # Optional sanity check: can Ruby/xcodeproj parse Runner.xcodeproj?
+      # Strict parse check (Runner.xcodeproj) - inline so we don't depend on tool/ci script existing
       - name: Strict parse check (Runner.xcodeproj)
         run: |
-          bash tool/ci/xcodeproj_strict_parse_check.sh
-
-      - name: Install dependencies
-        run: flutter pub get
+          set -euo pipefail
+          ruby -e 'require "xcodeproj"; Xcodeproj::Project.open("ios/Runner.xcodeproj"); puts "XCODEPROJ_PARSE_OK"'
 
       # --- Signing setup must happen BEFORE build ---
       - name: Import Certificates
         env:
           P12_PASSWORD: ${{ secrets.IOS_CERT_P12_PASSWORD }}
         run: |
+          set -euxo pipefail
           echo "${{ secrets.IOS_CERT_P12_BASE64 }}" | base64 --decode > certificate.p12
 
           security create-keychain -p "" build.keychain
@@ -63,29 +89,37 @@ jobs:
           security import certificate.p12 -k build.keychain -P "$P12_PASSWORD" -A
           security list-keychains -s build.keychain
           security default-keychain -s build.keychain
+          security find-identity -p codesigning -v || true
 
       - name: Install Provisioning Profile
         run: |
+          set -euxo pipefail
           mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
           echo "${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}" | base64 --decode > ~/Library/MobileDevice/Provisioning\ Profiles/profile.mobileprovision
+          ls -la ~/Library/MobileDevice/Provisioning\ Profiles
 
       - name: Build iOS IPA
-        run: flutter build ipa --release
+        run: |
+          set -euxo pipefail
+          flutter build ipa --release
 
-      # App Store Connect API key for altool must live here:
+      # App Store Connect API key for altool
       - name: Set up App Store Connect API key for altool
         run: |
+          set -euxo pipefail
           mkdir -p ~/.private_keys
-          cat > ~/.private_keys/AuthKey_${{ secrets.APPSTORE_API_KEY_ID }}.p8 << 'EOF'
-          ${{ secrets.APPSTORE_API_KEY }}
-          EOF
+          printf '%s' "${{ secrets.APPSTORE_API_KEY }}" > ~/.private_keys/AuthKey_${{ secrets.APPSTORE_API_KEY_ID }}.p8
           chmod 600 ~/.private_keys/AuthKey_${{ secrets.APPSTORE_API_KEY_ID }}.p8
+          ls -la ~/.private_keys
 
       - name: Upload to App Store Connect
         run: |
+          set -euxo pipefail
+          ls -la build/ios/ipa || true
           xcrun altool \
             --upload-app \
             --type ios \
             --file build/ios/ipa/*.ipa \
             --apiKey ${{ secrets.APPSTORE_API_KEY_ID }} \
             --apiIssuer ${{ secrets.APPSTORE_API_KEY_ISSUER }}
+
