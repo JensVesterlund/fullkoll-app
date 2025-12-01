@@ -2,52 +2,90 @@ name: iOS Release
 
 on:
   workflow_dispatch:
+    inputs:
+      regen_ios:
+        description: "Run one-time iOS regen (tool/ios_regen.sh) on the runner"
+        required: false
+        default: false
+        type: boolean
+      pbxproj_diag:
+        description: "Enable pbxproj diagnostics (DF_ENABLE_PBXPROJ_DIAG=1)"
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   build:
     runs-on: macos-latest
 
+    env:
+      DF_REGEN_IOS_IN_CI: ${{ inputs.regen_ios && '1' || '' }}
+      DF_ENABLE_PBXPROJ_DIAG: ${{ inputs.pbxproj_diag && '1' || '' }}
+
     steps:
       - name: Check out repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
           channel: stable
+          cache: true
+
+      - name: Flutter version
+        run: flutter --version
+
+      # Optional: regenerate ios/ on the runner
+      - name: Regenerate iOS project (optional)
+        if: ${{ inputs.regen_ios }}
+        run: |
+          bash tool/ios_regen.sh
+
+      # Optional sanity check: can Ruby/xcodeproj parse Runner.xcodeproj?
+      - name: Strict parse check (Runner.xcodeproj)
+        run: |
+          bash tool/ci/xcodeproj_strict_parse_check.sh
 
       - name: Install dependencies
         run: flutter pub get
 
-      - name: Build iOS IPA
-        run: flutter build ipa --release
-
-      - name: Set up App Store Connect API key
-        run: |
-          echo "${{ secrets.APPSTORE_API_KEY }}" > authkey.p8
-
+      # --- Signing setup must happen BEFORE build ---
       - name: Import Certificates
         env:
           P12_PASSWORD: ${{ secrets.IOS_CERT_P12_PASSWORD }}
         run: |
           echo "${{ secrets.IOS_CERT_P12_BASE64 }}" | base64 --decode > certificate.p12
+
           security create-keychain -p "" build.keychain
+          security set-keychain-settings -t 3600 -l ~/Library/Keychains/build.keychain
+          security unlock-keychain -p "" build.keychain
+
           security import certificate.p12 -k build.keychain -P "$P12_PASSWORD" -A
           security list-keychains -s build.keychain
           security default-keychain -s build.keychain
-          security unlock-keychain -p "" build.keychain
-          security set-keychain-settings -t 3600 -l ~/Library/Keychains/build.keychain
 
       - name: Install Provisioning Profile
         run: |
           mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
           echo "${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}" | base64 --decode > ~/Library/MobileDevice/Provisioning\ Profiles/profile.mobileprovision
 
+      - name: Build iOS IPA
+        run: flutter build ipa --release
+
+      # App Store Connect API key for altool must live here:
+      - name: Set up App Store Connect API key for altool
+        run: |
+          mkdir -p ~/.private_keys
+          cat > ~/.private_keys/AuthKey_${{ secrets.APPSTORE_API_KEY_ID }}.p8 << 'EOF'
+          ${{ secrets.APPSTORE_API_KEY }}
+          EOF
+          chmod 600 ~/.private_keys/AuthKey_${{ secrets.APPSTORE_API_KEY_ID }}.p8
+
       - name: Upload to App Store Connect
         run: |
           xcrun altool \
             --upload-app \
-            --type ipa \
+            --type ios \
             --file build/ios/ipa/*.ipa \
             --apiKey ${{ secrets.APPSTORE_API_KEY_ID }} \
             --apiIssuer ${{ secrets.APPSTORE_API_KEY_ISSUER }}
